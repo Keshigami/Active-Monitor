@@ -1,0 +1,192 @@
+{
+  "name": "Editor Monitor - Parsec + Deleted",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "file-activity",
+        "options": {}
+      },
+      "id": "webhook",
+      "name": "Webhook (All PCs)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [-400, 300],
+      "webhookId": "file-activity"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "parsec-check",
+              "leftValue": "={{ $json.body.event }}",
+              "rightValue": "parsec_connection",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "is-parsec",
+      "name": "Is Parsec?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-200, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "deleted-check",
+              "leftValue": "={{ $json.body.event }}",
+              "rightValue": "deleted",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "is-deleted",
+      "name": "Is Deleted?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [0, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body;\nconst machine = body.machine || 'Unknown';\nconst user = body.user || 'Unknown';\nconst status = body.status || 'unknown';\nconst emoji = status === 'connected' ? '🟢' : '🔴';\n\nconst message = `${emoji} **Parsec ${status.toUpperCase()}**\\n🖥️ ${machine}\\n👤 ${user}`;\n\nreturn [{ json: { message } }];"
+      },
+      "id": "format-parsec",
+      "name": "Format Parsec",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [0, 180]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body;\nconst machine = body.machine || 'Unknown';\nconst app = body.app || '';\nconst filename = body.filename || body.path || 'Unknown';\n\nconst appStr = app ? ` [${app}]` : '';\nconst message = `🗑️ **FILE DELETED**\\n🖥️ ${machine}${appStr}\\n📁 ${filename}`;\n\nreturn [{ json: { message } }];"
+      },
+      "id": "format-deleted",
+      "name": "Format Deleted",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [200, 340]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "guildId": {
+          "__rl": true,
+          "value": "1136817963245260800",
+          "mode": "list",
+          "cachedResultName": "Banner Mountain Media"
+        },
+        "channelId": {
+          "__rl": true,
+          "value": "1428102628985802933",
+          "mode": "list",
+          "cachedResultName": "synology-daily-monitor"
+        },
+        "content": "={{ $json.message }}",
+        "options": {}
+      },
+      "id": "discord-parsec",
+      "name": "Discord (Parsec)",
+      "type": "n8n-nodes-base.discord",
+      "typeVersion": 2,
+      "position": [200, 180],
+      "credentials": {
+        "discordBotApi": {
+          "id": "pDDMghhy1L6ys5wu",
+          "name": "Discord Bot account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "guildId": {
+          "__rl": true,
+          "value": "1136817963245260800",
+          "mode": "list",
+          "cachedResultName": "Banner Mountain Media"
+        },
+        "channelId": {
+          "__rl": true,
+          "value": "1428102628985802933",
+          "mode": "list",
+          "cachedResultName": "synology-daily-monitor"
+        },
+        "content": "={{ $json.message }}",
+        "options": {}
+      },
+      "id": "discord-deleted",
+      "name": "Discord (Deleted)",
+      "type": "n8n-nodes-base.discord",
+      "typeVersion": 2,
+      "position": [400, 340],
+      "credentials": {
+        "discordBotApi": {
+          "id": "pDDMghhy1L6ys5wu",
+          "name": "Discord Bot account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "noop",
+      "name": "Other Events (Logged Only)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [200, 500]
+    }
+  ],
+  "connections": {
+    "Webhook (All PCs)": {
+      "main": [[{ "node": "Is Parsec?", "type": "main", "index": 0 }]]
+    },
+    "Is Parsec?": {
+      "main": [
+        [{ "node": "Format Parsec", "type": "main", "index": 0 }],
+        [{ "node": "Is Deleted?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Is Deleted?": {
+      "main": [
+        [{ "node": "Format Deleted", "type": "main", "index": 0 }],
+        [{ "node": "Other Events (Logged Only)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Format Parsec": {
+      "main": [[{ "node": "Discord (Parsec)", "type": "main", "index": 0 }]]
+    },
+    "Format Deleted": {
+      "main": [[{ "node": "Discord (Deleted)", "type": "main", "index": 0 }]]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "c53a65938f35c1df0099d2ae662c3ac563d33bcf1e97f262b8eccf472cde7a4c"
+  }
+}

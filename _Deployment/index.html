@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>File Monitor - Deployment</title>
+    <style>
+      :root {
+        --bg: #0f172a;
+        --card: #1e293b;
+        --accent: #6366f1;
+        --success: #22c55e;
+        --mac: #a855f7;
+        --windows: #3b82f6;
+        --text: #f8fafc;
+        --muted: #94a3b8;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: "Segoe UI", system-ui, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        padding: 40px 20px;
+        line-height: 1.5;
+      }
+      .container {
+        max-width: 800px;
+        margin: 0 auto;
+      }
+      h1 {
+        text-align: center;
+        font-size: 2rem;
+        margin-bottom: 8px;
+      }
+      .subtitle {
+        text-align: center;
+        color: var(--muted);
+        margin-bottom: 30px;
+        font-size: 0.9rem;
+      }
+      .card {
+        background: var(--card);
+        border-radius: 12px;
+        padding: 25px;
+        margin-bottom: 20px;
+        border-left: 5px solid var(--accent);
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+      }
+      .card h2 {
+        font-size: 1.25rem;
+        margin-bottom: 15px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .badge {
+        background: var(--accent);
+        padding: 3px 10px;
+        border-radius: 99px;
+        font-size: 0.7rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      .windows {
+        border-color: var(--windows);
+      }
+      .windows .badge {
+        background: var(--windows);
+      }
+
+      .mac {
+        border-color: var(--mac);
+      }
+      .mac .badge {
+        background: var(--mac);
+      }
+
+      .admin {
+        border-color: #f59e0b;
+      }
+      .admin .badge {
+        background: #f59e0b;
+      }
+
+      .code-block {
+        background: rgba(0, 0, 0, 0.3);
+        border-radius: 6px;
+        padding: 15px;
+        font-family: "Consolas", monospace;
+        font-size: 0.85rem;
+        margin: 10px 0;
+        overflow-x: auto;
+        white-space: pre-wrap;
+        word-break: break-all;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      }
+
+      .btn {
+        background: var(--success);
+        color: white;
+        border: none;
+        padding: 10px 20px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-weight: 600;
+        text-decoration: none;
+        display: inline-block;
+        margin: 5px 5px 5px 0;
+        font-size: 0.9rem;
+        transition: opacity 0.2s;
+      }
+      .btn:hover {
+        opacity: 0.9;
+      }
+
+      .note {
+        font-size: 0.85rem;
+        color: var(--muted);
+        margin-top: 10px;
+        display: block;
+      }
+      .footer {
+        text-align: center;
+        color: var(--muted);
+        margin-top: 40px;
+        font-size: 0.8rem;
+        border-top: 1px solid rgba(255, 255, 255, 0.1);
+        padding-top: 20px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>🚀 Monitor Deployment</h1>
+      <p class="subtitle">v2.0 - Unified Auto-Update System</p>
+
+      <!-- WINDOWS EDITOR -->
+      <div class="card windows">
+        <h2><span class="badge">WINDOWS</span> Windows Editor PC</h2>
+        <p><strong>Copy & Run in PowerShell:</strong></p>
+        <div class="code-block" onclick="copy(this)">
+          Invoke-WebRequest "http://192.168.1.171:8888/deploy-windows.bat"
+          -OutFile "$env:TEMP\deploy.bat"; Start-Process cmd.exe "/c
+          $env:TEMP\deploy.bat" -Verb RunAs
+        </div>
+        <span class="note"
+          >✅ Installs as Hidden Background Service (Auto-Starts at Login)</span
+        >
+      </div>
+
+      <!-- MAC EDITOR -->
+      <div class="card mac">
+        <h2><span class="badge">MAC</span> Mac Editor PC</h2>
+        <p><strong>Copy & Run in Terminal:</strong></p>
+        <div class="code-block" onclick="copy(this)">
+          curl -s http://192.168.1.171:8888/file-monitor-mac.sh | bash
+        </div>
+        <span class="note"
+          >✅ Installs as LaunchAgent Service (Auto-Starts at Login)</span
+        >
+      </div>
+
+      <!-- ADMIN PC -->
+      <div class="card admin">
+        <h2><span class="badge">ADMIN</span> Admin PC Setup</h2>
+        <p><strong>Copy & Run in PowerShell (This Machine):</strong></p>
+        <div class="code-block" onclick="copy(this)">
+          Invoke-WebRequest "http://192.168.1.171:8888/setup-admin-pc.bat"
+          -OutFile "$env:TEMP\setup.bat"; Start-Process cmd.exe "/c
+          $env:TEMP\setup.bat" -Verb RunAs
+        </div>
+        <span class="note"
+          >✅ Installs Update Server (Auto-Boot) + Monitor Service
+          (Auto-Login)</span
+        >
+
+        <div
+          style="
+            margin-top: 15px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            padding-top: 10px;
+          "
+        >
+          <p
+            style="font-size: 0.85rem; color: var(--muted); margin-bottom: 5px"
+          >
+            <strong>n8n Resources:</strong>
+          </p>
+          <a
+            href="/unified-monitor.json"
+            class="btn"
+            style="padding: 5px 10px; font-size: 0.8rem; background: #4b5563"
+            >📄 unified-monitor.json</a
+          >
+          <a
+            href="/daily-report-all-pcs.json"
+            class="btn"
+            style="padding: 5px 10px; font-size: 0.8rem; background: #4b5563"
+            >📄 daily-report.json</a
+          >
+        </div>
+      </div>
+
+      <p class="footer">
+        Admin IP: <strong>192.168.1.171</strong><br />
+        Webhook: :5678 | Update Server: :8888 | Logs: :8080<br />
+        <em>Click code blocks to copy</em>
+      </p>
+    </div>
+
+    <script>
+      function copy(el) {
+        navigator.clipboard.writeText(el.innerText);
+        let original = el.style.borderColor;
+        el.style.borderColor = "#22c55e";
+        setTimeout(() => (el.style.borderColor = original), 200);
+      }
+    </script>
+  </body>
+</html>

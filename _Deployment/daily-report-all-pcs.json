@@ -1,0 +1,165 @@
+{
+  "name": "Daily Report - All Editor PCs",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "triggerAtHour": 21 }]
+        }
+      },
+      "id": "trigger",
+      "name": "Daily 9 PM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [-300, 160]
+    },
+    {
+      "parameters": {
+        "url": "http://192.168.1.170:8080/logs",
+        "options": { "timeout": 10000 }
+      },
+      "id": "fetch-mac",
+      "name": "Fetch Mac Logs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [-80, 60],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "http://192.168.1.172:8080/logs",
+        "options": { "timeout": 10000 }
+      },
+      "id": "fetch-windows",
+      "name": "Fetch Windows Logs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [-80, 260],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineAll",
+        "options": {}
+      },
+      "id": "merge",
+      "name": "Merge All Logs",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [140, 160]
+    },
+    {
+      "parameters": {
+        "jsCode": "const inputs = $input.all();\nconst today = new Date().toISOString().split('T')[0];\n\nlet allMachines = [];\nlet totalCreated = 0, totalModified = 0, totalDeleted = 0, totalParsec = 0, grandTotal = 0;\n\nfor (const input of inputs) {\n  const data = input.json;\n  if (!data || !data.events) continue;\n  \n  const machine = data.machine || 'Unknown';\n  const events = data.events || [];\n  \n  let created = 0, modified = 0, deleted = 0, parsec = 0;\n  const fileList = [];\n  const parsecList = [];\n  \n  for (const e of events) {\n    if (e.event === 'created') {\n      created++;\n      fileList.push(`✅ ${e.filename || e.path}${e.app ? ' (' + e.app + ')' : ''}`);\n    } else if (e.event === 'modified') {\n      modified++;\n      fileList.push(`📝 ${e.filename || e.path}${e.app ? ' (' + e.app + ')' : ''}`);\n    } else if (e.event === 'deleted') {\n      deleted++;\n      fileList.push(`🗑️ ${e.filename || e.path}${e.app ? ' (' + e.app + ')' : ''}`);\n    } else if (e.event === 'parsec_connection') {\n      parsec++;\n      const emoji = e.status === 'connected' ? '🟢' : '🔴';\n      parsecList.push(`${emoji} ${e.user} ${e.status}`);\n    }\n  }\n  \n  totalCreated += created;\n  totalModified += modified;\n  totalDeleted += deleted;\n  totalParsec += parsec;\n  grandTotal += events.length;\n  \n  // Deduplicate and limit file list\n  const uniqueFiles = [...new Set(fileList)].slice(-20);\n  const uniqueParsec = [...new Set(parsecList)];\n  \n  allMachines.push({\n    machine,\n    stats: { created, modified, deleted, parsec, total: events.length },\n    fileList: uniqueFiles.join('\\n') || 'No file activity',\n    parsecList: uniqueParsec.join('\\n') || 'No Parsec sessions'\n  });\n}\n\n// Build combined report text\nlet machineReports = allMachines.map(m => {\n  let report = `### 🖥️ ${m.machine}\\n`;\n  report += `**Stats:** Created: ${m.stats.created} | Modified: ${m.stats.modified} | Deleted: ${m.stats.deleted} | Total: ${m.stats.total}\\n\\n`;\n  \n  if (m.stats.parsec > 0) {\n    report += `**Parsec Sessions:**\\n${m.parsecList}\\n\\n`;\n  }\n  \n  report += `**Files:**\\n${m.fileList}`;\n  return report;\n}).join('\\n\\n---\\n\\n');\n\nif (allMachines.length === 0) {\n  machineReports = 'No data received from any Editor PC.';\n}\n\nconst summaryLine = `Created: ${totalCreated} | Modified: ${totalModified} | Deleted: ${totalDeleted} | Parsec: ${totalParsec} | Grand Total: ${grandTotal}`;\n\nreturn [{ \n  json: { \n    date: today,\n    machineCount: allMachines.length,\n    summary: summaryLine,\n    machineReports: machineReports,\n    stats: { created: totalCreated, modified: totalModified, deleted: totalDeleted, parsec: totalParsec, total: grandTotal }\n  } \n}];"
+      },
+      "id": "generate-report",
+      "name": "Generate Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [360, 160]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=## Daily File Activity Report (All Editor PCs)\n**Date**: {{ $json.date }}\n**Machines Reporting**: {{ $json.machineCount }}\n\n### Combined Summary\n{{ $json.summary }}\n\n### Machine Details\n{{ $json.machineReports }}",
+        "options": {
+          "systemMessage": "You are the Daily Activity Analyst for Banner Mountain Media. Analyze file activity logs from multiple Editor PCs and provide concise summaries.\n\nOutput format:\n**📊 Daily Activity Summary - [date]**\n\nBrief 2-3 sentence summary covering overall activity across all machines.\n\n**Per Machine:**\n🖥️ [Machine Name]: [brief 1-line summary]\n\n**Parsec Sessions:** (if any)\n[List any connect/disconnect events]\n\n**Files Worked On:**\n[List up to 10 notable files per machine, grouped by machine]\n\n**Combined Stats:** Created: X | Modified: X | Deleted: X | Parsec: X | Total: X\n\nGuidelines:\n- Include the actual file names that were modified\n- Highlight any video/project files (e.g., .prproj, .aep, .mp4)\n- Note Parsec session activity with usernames\n- Group files by machine\n- Be concise but include the file list"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [580, 160],
+      "id": "ai-agent",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "gpt-4o-mini"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [660, 380],
+      "id": "openai",
+      "name": "OpenAI Chat Model",
+      "credentials": {
+        "openAiApi": {
+          "id": "aOQ7YXvmedhfMq5g",
+          "name": "OpenAi account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "guildId": {
+          "__rl": true,
+          "value": "1136817963245260800",
+          "mode": "list",
+          "cachedResultName": "Banner Mountain Media"
+        },
+        "channelId": {
+          "__rl": true,
+          "value": "1428102628985802933",
+          "mode": "list",
+          "cachedResultName": "synology-daily-monitor"
+        },
+        "content": "={{ $json.output }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.discord",
+      "typeVersion": 2,
+      "position": [800, 160],
+      "id": "discord",
+      "name": "Send to Discord",
+      "credentials": {
+        "discordBotApi": {
+          "id": "pDDMghhy1L6ys5wu",
+          "name": "Discord Bot account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Daily 9 PM": {
+      "main": [
+        [
+          { "node": "Fetch Mac Logs", "type": "main", "index": 0 },
+          { "node": "Fetch Windows Logs", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Fetch Mac Logs": {
+      "main": [[{ "node": "Merge All Logs", "type": "main", "index": 0 }]]
+    },
+    "Fetch Windows Logs": {
+      "main": [[{ "node": "Merge All Logs", "type": "main", "index": 1 }]]
+    },
+    "Merge All Logs": {
+      "main": [[{ "node": "Generate Report", "type": "main", "index": 0 }]]
+    },
+    "Generate Report": {
+      "main": [[{ "node": "AI Agent", "type": "main", "index": 0 }]]
+    },
+    "AI Agent": {
+      "main": [[{ "node": "Send to Discord", "type": "main", "index": 0 }]]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [{ "node": "AI Agent", "type": "ai_languageModel", "index": 0 }]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "c53a65938f35c1df0099d2ae662c3ac563d33bcf1e97f262b8eccf472cde7a4c"
+  }
+}

@@ -1,0 +1,17 @@
+# Logs
+*.log
+*.log.txt
+monitor.log
+
+# System
+.DS_Store
+Thumbs.db
+
+# Temp
+*.tmp
+*.bak
+deploy.bat
+setup.bat
+
+# User specific (if any)
+*.user
