@@ -1,78 +1,55 @@
-============================================================
-      ACTIVE MONITOR SYSTEM v2.0 - DEPLOYMENT PACKAGE
-============================================================
+# 📡 Active Monitor System
 
-This folder contains the complete monitoring solution for:
-1. Windows Editor PCs (File Monitor + Parsec)
-2. Mac Editor PCs (File Monitor + Parsec)
-3. Admin PC (Central Server + Parsec)
+![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)
+![Platform](https://img.shields.io/badge/platform-Windows%20|%20macOS-lightgrey.svg)
+![Status](https://img.shields.io/badge/status-Production-success.svg)
 
-============================================================
-                    QUICK DEPLOYMENT
-============================================================
+A robust, cross-platform monitoring system for Editor PCs, tracking file activity, active applications, and Parsec connections. Designed for silent background operation and automated deployment.
 
-The easiest way to install/update is via the internal website:
+## 🚀 Features
 
-    >>  http://192.168.1.171:8888  <<
+* **Background Operation**: Runs as a hidden system service (Windows) or LaunchAgent (macOS).
+* **Auto-Update**: Clients automatically update from the central server.
+* **Parsec Integration**: Real-time detection of connection/disconnection events.
+* **Centralized Logging**: All events aggregated to an n8n webhook and Discord.
 
-Visit this URL from any computer to get the one-line install command.
+## 🛠️ System Architecture
 
-============================================================
-                   FILES IN THIS FOLDER
-============================================================
+```mermaid
+graph TD
+    A[Admin PC] -->|Hosts| B(Update Server :8888)
+    A -->|Hosts| C(n8n Webhook :5678)
+    D[Windows Editor] -->|Pulls Updates| B
+    D -->|Sends Events| C
+    E[Mac Editor] -->|Pulls Updates| B
+    E -->|Sends Events| C
+```
 
-[DEPLOYMENT SERVER]
-  start-update-server.bat     - (Redundant) Starts the Python update server manually
-  index.html                  - The Deployment Website shown at port 8888
-  setup-admin-pc.bat          - Installs the Update Server & Admin Monitor as SYSTEM services
+## 📦 Deployment
 
-[WINDOWS MONITOR]
-  file-monitor.ps1            - The core monitoring script (v2.0)
-  deploy-windows.bat          - Installer script (fetches file-monitor.ps1 + sets up Task)
-  uninstall.bat               - Removes the monitor completely
+The easiest way to install is via the internal Deployment Hub.
 
-[MAC MONITOR]
-  file-monitor-mac.sh         - Installs Python monitor + LaunchAgent service
+**Hub URL:** `http://192.168.1.171:8888`
 
-[ADMIN MONITOR]
-  parsec-monitor-admin.ps1    - Admin-specific Parsec monitor script
+### Quick Commands
 
-[N8N WORKFLOWS]
-  unified-monitor.json        - Main workflow (Webhook -> Discord)
-  daily-report-all-pcs.json   - Daily summary report workflow
+| Platform | Command (Run in Terminal/PowerShell) |
+| :--- | :--- |
+| **Windows** | `Invoke-WebRequest "http://192.168.1.171:8888/deploy-windows.bat" -OutFile "$env:TEMP\deploy.bat"; Start-Process cmd.exe "/c $env:TEMP\deploy.bat" -Verb RunAs` |
+| **macOS** | `curl -s <http://192.168.1.171:8888/file-monitor-mac.sh> | bash` |
+| **Admin PC** | `Invoke-WebRequest "http://192.168.1.171:8888/setup-admin-pc.bat" -OutFile "$env:TEMP\setup.bat"; Start-Process cmd.exe "/c $env:TEMP\setup.bat" -Verb RunAs` |
 
-============================================================
-                 SYSTEM ARCHITECTURE (v2.0)
-============================================================
+## 📂 Project Structure
 
-1. Admin PC (192.168.1.171)
-   - Hosting: Update Server (Port 8888, Auto-Start)
-   - Hosting: n8n Webhook (Port 5678)
-   - Monitor: Parsec Connections (Port 8080 logs)
+* `_Deployment/` - Source files distributed to clients.
+* `docs/` - Detailed documentation and guides.
+* `README.md` - This file.
 
-2. Windows Editor PC
-   - Monitor: File Activity + Active App + Parsec
-   - Service: Hidden Scheduled Task (Auto-Start at Logon)
-   - Logs: http://<IP>:8080/logs
+## 🔗 Documentation
 
-3. Mac Editor PC
-   - Monitor: File Activity + Active App + Parsec
-   - Service: LaunchAgent (Auto-Start at Login)
-   - Logs: http://<IP>:8080/logs
+* [Deployment Walkthrough](docs/walkthrough.md)
+* [Project Status](docs/project-status.md)
+* [Rest API Logs](http://192.168.1.171:8080/logs)
 
-============================================================
-                    MANUAL INSTALLATION
-============================================================
-
-If the website is down:
-
-[Windows]
-1. Copy 'file-monitor.ps1' to C:\ProgramData\FileMonitor\
-2. Create Scheduled Task to run it hidden at logon.
-
-[Mac]
-1. Copy 'file-monitor-mac.sh' to user home.
-2. Run: bash file-monitor-mac.sh
-
-[Admin]
-1. Run 'setup-admin-pc.bat' as Administrator.
+---
+*Maintained by Keshigami*
