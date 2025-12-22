@@ -48,8 +48,8 @@ schtasks /Delete /TN "ParsecMonitorAdmin" /F >nul 2>&1
 if not exist "C:\ProgramData\ParsecMonitor" mkdir "C:\ProgramData\ParsecMonitor"
 copy /Y "%~dp0parsec-monitor-admin.ps1" "C:\ProgramData\ParsecMonitor\parsec-monitor-admin.ps1" >nul
 
-:: Create scheduled task
-powershell -Command "$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-WindowStyle Hidden -ExecutionPolicy Bypass -File \"C:\ProgramData\ParsecMonitor\parsec-monitor-admin.ps1\"'; $trigger = New-ScheduledTaskTrigger -AtLogon; $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartInterval (New-TimeSpan -Minutes 1) -RestartCount 3; Register-ScheduledTask -TaskName 'ParsecMonitorAdmin' -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest -Force" >nul 2>&1
+:: Create scheduled task with enhanced persistence
+powershell -Command "$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-WindowStyle Hidden -ExecutionPolicy Bypass -File \"C:\ProgramData\ParsecMonitor\parsec-monitor-admin.ps1\"'; $trigger = New-ScheduledTaskTrigger -AtLogon; $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -RestartInterval (New-TimeSpan -Minutes 1) -RestartCount 999; Register-ScheduledTask -TaskName 'ParsecMonitorAdmin' -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest -Force" >nul 2>&1
 
 :: Start it now
 schtasks /Run /TN "ParsecMonitorAdmin" >nul 2>&1

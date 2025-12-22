@@ -9,7 +9,7 @@ $LogFile = Join-Path $LogDir "monitor.log"
 function Write-Log {
     param($Message, $Level = "INFO")
     $line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [$Level] $Message"
-    Add-Content -Path $LogFile -Value $line -ErrorAction SilentlyContinue
+    Add-Content -Path $LogFile -Value $line
     Write-Host $line
 }
 
@@ -18,7 +18,6 @@ $mutexName = "Global\ParsecMonitorAdmin"
 $mutexCreated = $false
 try {
     $mutex = New-Object System.Threading.Mutex($true, $mutexName, [ref]$mutexCreated)
-    $null = $mutex
 }
 catch {
     $mutex = $null
@@ -92,17 +91,39 @@ $action = {
                     
                     $global:ParsecRateLimits[$parsecKey] = $now
 
-                    $payload = @{
+                    $eventData = @{
                         timestamp = $now.ToString("o")
                         event     = "parsec_connection"
                         status    = $pStatus
                         user      = $pUser
                         machine   = $env:COMPUTERNAME
-                    } | ConvertTo-Json
+                    }
+                    
+                    $payload = $eventData | ConvertTo-Json
 
                     try {
                         Invoke-RestMethod -Uri $WebhookUrl -Method Post -Body $payload -ContentType "application/json" -TimeoutSec 5 | Out-Null
                         Write-Log "[PARSEC] $pUser $pStatus" "SUCCESS"
+                        
+                        # Also store in FileMonitor's events.json for daily report
+                        $EventsFile = "$env:ProgramData\FileMonitor\events.json"
+                        try {
+                            $today = Get-Date -Format "yyyy-MM-dd"
+                            $existingData = @{ date = $today; events = @(); machine = $env:COMPUTERNAME }
+                            
+                            if (Test-Path $EventsFile) {
+                                $content = Get-Content $EventsFile -Raw -ErrorAction SilentlyContinue
+                                if ($content) {
+                                    $existingData = $content | ConvertFrom-Json
+                                    if ($existingData.date -ne $today) {
+                                        $existingData = @{ date = $today; events = @(); machine = $env:COMPUTERNAME }
+                                    }
+                                }
+                            }
+                            
+                            $existingData.events += $eventData
+                            $existingData | ConvertTo-Json -Depth 10 | Out-File $EventsFile -Encoding UTF8 -Force
+                        } catch { }
                     }
                     catch {
                         Write-Log "[PARSEC] Send failed: $($_.Exception.Message)" "ERROR"

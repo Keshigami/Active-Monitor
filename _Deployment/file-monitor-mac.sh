@@ -1,7 +1,7 @@
 #!/bin/bash
 # File Activity Monitor for macOS
 # With rate limiting, app tracking, and daily reports
-VERSION="2.0"
+VERSION="1.3"
 
 
 WEBHOOK_URL="${WEBHOOK_URL:-http://192.168.1.171:5678/webhook/file-activity}"
@@ -33,7 +33,7 @@ from watchdog.events import FileSystemEventHandler
 from flask import Flask, jsonify
 
 WEBHOOK_URL = os.environ.get('WEBHOOK_URL', 'http://192.168.1.171:5678/webhook/file-activity')
-CURRENT_VERSION = "2.0"
+CURRENT_VERSION = "1.3"
 
 def check_for_updates():
     try:
@@ -70,29 +70,27 @@ def check_for_updates():
 watch_dirs_env = os.environ.get('WATCH_DIRS', os.path.expanduser('~'))
 WATCH_DIRS = [d.strip() for d in watch_dirs_env.split(',')]
 
-# Auto-add /Volumes for external drives if not explicitly set? 
-# Better: Just check if we should add common paths.
-# If only watching ~, add /Volumes if it exists to catch external drives
+# Auto-add /Volumes for external drives
 if len(WATCH_DIRS) == 1 and WATCH_DIRS[0] == os.path.expanduser('~'):
     if os.path.exists('/Volumes'):
         WATCH_DIRS.append('/Volumes')
 
 EVENTS_LOG = os.path.expanduser('~/.file-events.json')
 
-# Ignore system paths
+# Ignore system paths and high-frequency noise
 IGNORE_PATTERNS = [
     '.git', 'node_modules', '.DS_Store', '__pycache__', '.tmp',
     'Library', '.Trash', '.cache', 'Caches', 'Cache', '.npm', '.config',
     'Application Support', 'Google/Chrome', '.local', '.vscode',
     'CrashReporter', 'Saved Application State', 'WebKit', '.file-events',
-    '.Spotlight-V100', '.fseventsd', 'Time Machine Backups', '.parsec', 'Parsec'
+    'log.txt', '.parsec', 'Parsec' # Exclude Parsec specifically from general monitor
 ]
 
-# Rate limiting
-MAX_EVENTS_PER_MINUTE = 10
+# Rate limiting - balanced for visibility without freezing
+MAX_EVENTS_PER_MINUTE = 5
 event_times = deque(maxlen=MAX_EVENTS_PER_MINUTE)
 last_sent = {}
-MIN_EVENT_GAP = 5
+MIN_EVENT_GAP = 10  # seconds between events for same file
 
 # In-memory events
 todays_events = []
@@ -149,8 +147,8 @@ class FileMonitor(FileSystemEventHandler):
         last_sent[event_key] = now
         event_times.append(now)
         
-        # Get active app (cache for 2 seconds)
-        if now - last_app_time > 2:
+        # Get active app (cache for 30 seconds to reduce CPU usage from osascript)
+        if now - last_app_time > 30:
             last_app = get_active_app()
             last_app_time = now
         

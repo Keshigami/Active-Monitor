@@ -21,8 +21,6 @@ $mutexName = "Global\FileActivityMonitor"
 $mutexCreated = $false
 try {
     $mutex = New-Object System.Threading.Mutex($true, $mutexName, [ref]$mutexCreated)
-    # Keep reference to prevent GC from releasing mutex
-    $null = $mutex
 }
 catch {
     $mutex = $null
@@ -50,60 +48,60 @@ function Write-Log {
     }
 }
 
-# File Activity Monitor with Auto-Update
-$VERSION = "2.0.0"
-
-Write-Log "=== File Activity Monitor Starting (v$VERSION) ===" "INFO"
+Write-Log "=== File Activity Monitor Starting ===" "INFO"
 Write-Log "Webhook URL: $WebhookUrl" "INFO"
 Write-Log "Log Directory: $LogDir" "INFO"
 Write-Log "Computer: $env:COMPUTERNAME" "INFO"
 
-# --- AUTO-UPDATE CHECK ---
+# --- AUTO-UPDATE DISABLED ---
+# Auto-update was causing crashes, disabled for stability
+<#
 try {
     $UpdateUrl = "http://192.168.1.171:8888/file-monitor.ps1"
     $CurrentScript = $MyInvocation.MyCommand.Definition
     
     # Only update if we are running from the final install location
     if ($CurrentScript -like "*ProgramData*") {
-        Write-Log "Checking for updates (Current: $VERSION)..." "INFO"
-        try {
-            $NewScriptContent = Invoke-WebRequest -Uri $UpdateUrl -UseBasicParsing -TimeoutSec 5
-            $NewContent = $NewScriptContent.Content
+        Write-Log "Checking for updates..." "INFO"
+        $NewScriptContent = Invoke-WebRequest -Uri $UpdateUrl -UseBasicParsing -TimeoutSec 5
+        $NewContent = $NewScriptContent.Content
+        
+        # Calculate Hashes
+        $CurrentHash = Get-FileHash -Path $CurrentScript -Algorithm MD5
+        $NewHashString = $NewContent
+        
+        # Simple string comparison first (faster)
+        $CurrentContent = Get-Content -Path $CurrentScript -Raw
+        if ($CurrentContent.Length -ne $NewContent.Length -or $CurrentContent -ne $NewContent) {
+            Write-Log "Update available! Installing..." "INFO"
+            $NewContent | Out-File -FilePath "$CurrentScript.new" -Encoding UTF8 -Force
             
-            # Regex to find version in new content
-            if ($NewContent -match '\$VERSION\s*=\s*"([^"]+)"') {
-                $RemoteVersion = $matches[1]
+            # Verify the new file was written
+            if (Test-Path "$CurrentScript.new") {
+                Move-Item -Path "$CurrentScript.new" -Destination $CurrentScript -Force
+                Write-Log "Update installed. Restarting..." "SUCCESS"
                 
-                # Simple string compare (works for 1.0.1 vs 1.0.2)
-                if ($RemoteVersion -gt $VERSION) {
-                    Write-Log "Update found! ($VERSION -> $RemoteVersion). Installing..." "INFO"
-                    $NewContent | Out-File -FilePath "$CurrentScript.new" -Encoding UTF8 -Force
-                     
-                    if (Test-Path "$CurrentScript.new") {
-                        Move-Item -Path "$CurrentScript.new" -Destination $CurrentScript -Force
-                        Write-Log "Update installed. Restarting..." "SUCCESS"
-                        Start-Sleep -Seconds 1
-                        
-                        # Stop current instance if running via Task Scheduler (implicit, but we are the process)
-                        # We just spawn the new one.
-                        Start-Process powershell.exe -ArgumentList "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$CurrentScript`""
-                        exit
-                    }
-                }
-                else {
-                    Write-Log "Monitor is up to date ($VERSION)." "INFO"
-                }
+                # Restart the Scheduled Task to load new script
+                Start-Sleep -Seconds 1
+                Unregister-ScheduledTask -TaskName "FileActivityMonitor" -Confirm:$false -ErrorAction SilentlyContinue
+                # Re-registering is safer but more complex here. 
+                # Simplest: Just exit. The scheduled task settings should restart it on failure? 
+                # No, better to just respawn powershell.
+                
+                # Restart via scheduled task instead of spawning new process
+                Start-ScheduledTask -TaskName "FileActivityMonitor" -ErrorAction SilentlyContinue
+                exit
             }
         }
-        catch {
-            Write-Log "Failed to check/parse update: $($_.Exception.Message)" "WARN"
+        else {
+            Write-Log "Monitor is up to date." "INFO"
         }
     }
 }
 catch {
-    Write-Log "Update check logic failed: $($_.Exception.Message)" "WARN"
+    Write-Log "Update check failed: $($_.Exception.Message)" "WARN"
 }
-# -------------------------
+#>
 
 # Load Win32 API for getting active window
 try {
@@ -162,6 +160,10 @@ foreach ($dir in $WatchDirs) {
             $w.NotifyFilter = [System.IO.NotifyFilters]::FileName -bor 
             [System.IO.NotifyFilters]::LastWrite -bor 
             [System.IO.NotifyFilters]::DirectoryName
+            
+            # CRITICAL: Increase buffer size to prevent overflow (default is 8KB)
+            $w.InternalBufferSize = 65536  # 64KB buffer
+            
             $watchers += $w
             Write-Log " -> Watching: $dir" "SUCCESS"
         }
@@ -194,19 +196,19 @@ $MAX_EVENTS_PER_MINUTE = 10
 $MIN_EVENT_GAP = 5
 
 # --- EVENT STORAGE FOR DAILY SUMMARY ---
-$global:todaysEvents = @()
+$script:todaysEvents = @()
 $EventsFile = Join-Path $LogDir "events.json"
 
 function Save-TodaysEvents {
     try {
         $data = @{
             date    = (Get-Date -Format "yyyy-MM-dd")
-            events  = $global:todaysEvents
+            events  = $script:todaysEvents
             machine = $env:COMPUTERNAME
         }
         $json = $data | ConvertTo-Json -Depth 10
         $json | Out-File $EventsFile -Encoding UTF8 -Force
-        # Write-Log "Saved $($global:todaysEvents.Count) events to $EventsFile" "INFO"
+        # Write-Log "Saved $($script:todaysEvents.Count) events to $EventsFile" "INFO"
     }
     catch {
         Write-Log "Failed to save events: $($_.Exception.Message)" "ERROR"
@@ -214,24 +216,24 @@ function Save-TodaysEvents {
 }
 
 function Initialize-TodaysEvents {
-    $global:todaysEvents = New-Object System.Collections.ArrayList
     if (Test-Path $EventsFile) {
         try {
             $data = Get-Content $EventsFile -Raw | ConvertFrom-Json
-            if ($data.date -eq (Get-Date -Format "yyyy-MM-dd") -and $data.events) {
-                foreach ($evt in $data.events) {
-                    $global:todaysEvents.Add($evt) | Out-Null
-                }
+            if ($data.date -eq (Get-Date -Format "yyyy-MM-dd")) {
+                $script:todaysEvents = @($data.events)
+            }
+            else {
+                $script:todaysEvents = @()
             }
         }
         catch {
-            # Keep empty ArrayList
+            $script:todaysEvents = @()
         }
     }
 }
 
 Initialize-TodaysEvents
-Write-Log "Loaded $($global:todaysEvents.Count) events from today" "INFO"
+Write-Log "Loaded $($script:todaysEvents.Count) events from today" "INFO"
 
 
 function Send-Webhook {
@@ -281,7 +283,7 @@ function Send-Webhook {
     }
     
     # Store event for daily summary
-    $global:todaysEvents.Add($payload) | Out-Null
+    $script:todaysEvents += $payload
     Save-TodaysEvents
     
     $payloadJson = $payload | ConvertTo-Json
@@ -289,6 +291,9 @@ function Send-Webhook {
     try {
         Invoke-RestMethod -Uri $WebhookUrl -Method Post -Body $payloadJson -ContentType "application/json" -TimeoutSec 5 | Out-Null
         Write-Log "[$EventType] [$($script:lastApp)] $([System.IO.Path]::GetFileName($Path))" "INFO"
+        
+        # Update watchdog - we processed an event successfully
+        $script:lastEventTime = Get-Date
     }
     catch {
         Write-Log "Webhook failed for $Path : $($_.Exception.Message)" "ERROR"
@@ -298,203 +303,127 @@ function Send-Webhook {
 $action = {
     $eventType = $Event.SourceEventArgs.ChangeType.ToString().ToLower()
     $path = $Event.SourceEventArgs.FullPath
-    Send-Webhook -EventType $eventType -Path $path
+    
+    # Get config from MessageData
+    $config = $Event.MessageData
+    $WebhookUrl = $config.WebhookUrl
+    $LogFile = $config.LogFile
+    $EventsFile = $config.EventsFile
+    $systemExcludes = $config.systemExcludes
+    $ignorePatterns = $config.ignorePatterns
+    
+    # Check System Exclusions
+    foreach ($sys in $systemExcludes) {
+        if ($path.StartsWith($sys, [System.StringComparison]::OrdinalIgnoreCase)) { return }
+    }
+    
+    # Check Patterns
+    foreach ($pattern in $ignorePatterns) {
+        if ($path -like "*$pattern*") { return }
+    }
+    
+    # Get active app
+    $app = "Unknown"
+    try {
+        $hwnd = [Win32]::GetForegroundWindow()
+        $processId = 0
+        [Win32]::GetWindowThreadProcessId($hwnd, [ref]$processId) | Out-Null
+        $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
+        $app = $process.ProcessName
+    } catch { }
+    
+    $eventData = @{
+        timestamp = (Get-Date).ToString("o")
+        event     = $eventType
+        path      = $path
+        filename  = [System.IO.Path]::GetFileName($path)
+        machine   = $env:COMPUTERNAME
+        app       = $app
+    }
+    
+    $payload = $eventData | ConvertTo-Json
+    
+    try {
+        Invoke-RestMethod -Uri $WebhookUrl -Method Post -Body $payload -ContentType "application/json" -TimeoutSec 5 | Out-Null
+        $line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [INFO] [$eventType] [$app] $([System.IO.Path]::GetFileName($path))"
+        Add-Content -Path $LogFile -Value $line
+        Write-Host $line
+        
+        # Store event for daily report
+        try {
+            $today = Get-Date -Format "yyyy-MM-dd"
+            $existingData = @{ date = $today; events = @(); machine = $env:COMPUTERNAME }
+            
+            if (Test-Path $EventsFile) {
+                $content = Get-Content $EventsFile -Raw -ErrorAction SilentlyContinue
+                if ($content) {
+                    $existingData = $content | ConvertFrom-Json
+                    if ($existingData.date -ne $today) {
+                        $existingData = @{ date = $today; events = @(); machine = $env:COMPUTERNAME }
+                    }
+                }
+            }
+            
+            $existingData.events += $eventData
+            $existingData | ConvertTo-Json -Depth 10 | Out-File $EventsFile -Encoding UTF8 -Force
+        } catch { }
+    }
+    catch {
+        $line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [ERROR] Webhook failed: $($_.Exception.Message)"
+        Add-Content -Path $LogFile -Value $line
+    }
+}
+
+# Config to pass to event handlers
+$eventConfig = @{
+    WebhookUrl = $WebhookUrl
+    LogFile = $LogFile
+    EventsFile = Join-Path $LogDir "events.json"
+    systemExcludes = $systemExcludes
+    ignorePatterns = $ignorePatterns
 }
 
 foreach ($w in $watchers) {
-    Register-ObjectEvent $w "Created" -Action $action | Out-Null
-    Register-ObjectEvent $w "Changed" -Action $action | Out-Null
-    Register-ObjectEvent $w "Deleted" -Action $action | Out-Null
-    Register-ObjectEvent $w "Renamed" -Action $action | Out-Null
+    Register-ObjectEvent $w "Created" -Action $action -MessageData $eventConfig | Out-Null
+    Register-ObjectEvent $w "Changed" -Action $action -MessageData $eventConfig | Out-Null
+    Register-ObjectEvent $w "Deleted" -Action $action -MessageData $eventConfig | Out-Null
+    Register-ObjectEvent $w "Renamed" -Action $action -MessageData $eventConfig | Out-Null
 }
 
-# --- PARSEC LOG MONITORING ---
-# Try current user's AppData first, then search all users
-$ParsecLogPath = "$env:APPDATA\Parsec\log.txt"
-if (-not (Test-Path $ParsecLogPath)) {
-    Write-Log "Parsec log not at $ParsecLogPath, searching other profiles..." "WARN"
-    # Search all user profiles
-    $userProfiles = Get-ChildItem "C:\Users" -Directory | Where-Object { $_.Name -notin @('Public', 'Default', 'Default User', 'All Users') }
-    foreach ($userDir in $userProfiles) {
-        $testPath = Join-Path $userDir.FullName "AppData\Roaming\Parsec\log.txt"
-        if (Test-Path $testPath) {
-            $ParsecLogPath = $testPath
-            Write-Log "Found Parsec log at: $ParsecLogPath" "SUCCESS"
-            break
-        }
-    }
-}
-if (Test-Path $ParsecLogPath) {
-    Write-Log "Using Parsec Log: $ParsecLogPath" "SUCCESS"
-    
-    $global:ParsecLogLastPos = (Get-Item $ParsecLogPath).Length
-    $global:ParsecRateLimits = @{}
+# --- PARSEC MONITORING DISABLED ---
+# Parsec monitoring is now handled by the dedicated ParsecMonitorEditor task
+# to avoid event subscriber conflicts and dictionary key errors.
+# See: C:\ProgramData\ParsecMonitor\parsec-monitor-admin.ps1
 
-    $pWatcher = New-Object System.IO.FileSystemWatcher
-    $pWatcher.Path = [System.IO.Path]::GetDirectoryName($ParsecLogPath)
-    $pWatcher.Filter = [System.IO.Path]::GetFileName($ParsecLogPath)
-    $pWatcher.NotifyFilter = [System.IO.NotifyFilters]::LastWrite -bor [System.IO.NotifyFilters]::Size
-    $pWatcher.EnableRaisingEvents = $true
-
-    $pAction = {
-        $path = $Event.SourceEventArgs.FullPath
-        
-        try {
-            $fs = [System.IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
-            if ($fs.Length -lt $global:ParsecLogLastPos) { $global:ParsecLogLastPos = 0 }
-            
-            $newContent = ""
-            if ($fs.Length -gt $global:ParsecLogLastPos) {
-                if ($global:ParsecLogLastPos -gt 0) { $fs.Seek($global:ParsecLogLastPos, 'Begin') | Out-Null }
-                $reader = New-Object System.IO.StreamReader($fs)
-                $newContent = $reader.ReadToEnd()
-                $global:ParsecLogLastPos = $fs.Position
-                $reader.Close()
-            }
-            $fs.Close()
-
-            if ($newContent) {
-                $lines = $newContent -split "`n"
-                foreach ($line in $lines) {
-                    if ($line -match "\[I .*?\] (.*?) (connected|disconnected)\.") {
-                        $pUser = $matches[1]
-                        $pStatus = $matches[2]
-                            
-                        if ($pUser -in @("IPC", "Parsec", "Virtual", "Hosting")) { continue }
-                        
-                        # Rate limit: Skip if same user+status within 10 seconds
-                        $parsecKey = "$pUser-$pStatus"
-                        $now = Get-Date
-
-                        if (-not $global:ParsecRateLimits) { $global:ParsecRateLimits = @{} }
-                        
-                        if ($global:ParsecRateLimits.ContainsKey($parsecKey)) {
-                            $lastTime = $global:ParsecRateLimits[$parsecKey]
-                            $elapsed = ($now - $lastTime).TotalSeconds
-                            if ($elapsed -lt 10) { continue }
-                        }
-                        
-                        $global:ParsecRateLimits[$parsecKey] = $now
-
-                        # Build JSON string directly to avoid hashtable issues
-                        $timestamp = (Get-Date).ToString("o")
-                        $payloadJson = @"
-{"timestamp":"$timestamp","event":"parsec_connection","status":"$pStatus","user":"$pUser","machine":"$env:COMPUTERNAME"}
-"@
-                        
-                        # Store for daily summary using PSCustomObject
-                        $eventObj = [PSCustomObject]@{
-                            timestamp = $timestamp
-                            event     = "parsec_connection"
-                            status    = $pStatus
-                            user      = $pUser
-                            machine   = $env:COMPUTERNAME
-                        }
-                        $global:todaysEvents.Add($eventObj) | Out-Null
-                        Save-TodaysEvents
-                        
-                        try {
-                            Invoke-RestMethod -Uri $WebhookUrl -Method Post -Body $payloadJson -ContentType "application/json" -TimeoutSec 5 | Out-Null
-                            Write-Log "[PARSEC] $pUser $pStatus" "SUCCESS"
-                        }
-                        catch {
-                            Write-Log "[PARSEC] Failed to send: $($_.Exception.Message)" "ERROR"
-                        }
-                    }
-                }
-            }
-        }
-        catch {
-            Write-Log "Error reading Parsec log: $_" "ERROR"
-        }
-    }
-
-    Register-ObjectEvent -InputObject $pWatcher -EventName "Changed" -SourceIdentifier "ParsecLogWatcher" -Action $pAction | Out-Null
-}
-else {
-    Write-Log "Parsec log not found at $ParsecLogPath" "WARN"
-}
 
 Write-Log "=== Monitor Running ===" "SUCCESS"
-Write-Log "HTTP Server: http://0.0.0.0:8080/logs" "INFO"
+Write-Log "Note: HTTP Server runs as separate FileMonitorHttpServer task" "INFO"
 Write-Log "Press Ctrl+C to stop..." "INFO"
 
+# Watchdog: Restart if FileSystemWatcher stops working
+$script:lastEventTime = Get-Date
+$WATCHDOG_TIMEOUT = 600 # 10 minutes without events = restart
+$lastWatchdogCheck = Get-Date
 
-# Start HTTP listener in a background job
-$HttpJob = Start-Job -ScriptBlock {
-    param($LogDir)
+# Keep the script running - use short sleep to allow event processing
+Write-Log "Watchdog enabled - will restart if no events for $($WATCHDOG_TIMEOUT/60) minutes" "INFO"
+while ($true) {
+    # Short sleep to allow PowerShell to process events
+    Start-Sleep -Milliseconds 500
     
-    $EventsFile = Join-Path $LogDir "events.json"
-    $listener = New-Object System.Net.HttpListener
-    $listener.Prefixes.Add("http://+:8080/")
-    
-    try {
-        $listener.Start()
-    }
-    catch {
-        # Try localhost only if + fails
-        $listener = New-Object System.Net.HttpListener
-        $listener.Prefixes.Add("http://localhost:8080/")
-        $listener.Start()
-    }
-    
-    while ($listener.IsListening) {
-        try {
-            $context = $listener.GetContext()
-            $request = $context.Request
-            $response = $context.Response
+    # Check watchdog every minute
+    if (((Get-Date) - $lastWatchdogCheck).TotalSeconds -gt 60) {
+        $lastWatchdogCheck = Get-Date
+        $timeSinceLastEvent = ((Get-Date) - $script:lastEventTime).TotalSeconds
+        
+        if ($timeSinceLastEvent -gt $WATCHDOG_TIMEOUT) {
+            Write-Log "WATCHDOG: No file events for $([math]::Round($timeSinceLastEvent/60, 1)) minutes - FileSystemWatcher may have failed" "WARN"
+            Write-Log "WATCHDOG: Restarting monitor to recover..." "WARN"
             
-            if ($request.Url.AbsolutePath -eq "/logs") {
-                # Read events file
-                $responseData = @{
-                    date    = (Get-Date -Format "yyyy-MM-dd")
-                    events  = @()
-                    machine = $env:COMPUTERNAME
-                }
-                
-                if (Test-Path $EventsFile) {
-                    try {
-                        $data = Get-Content $EventsFile -Raw | ConvertFrom-Json
-                        $responseData = $data
-                    }
-                    catch {}
-                }
-                
-                $json = $responseData | ConvertTo-Json -Depth 10
-                $buffer = [System.Text.Encoding]::UTF8.GetBytes($json)
-                $response.ContentType = "application/json"
-                $response.ContentLength64 = $buffer.Length
-                $response.OutputStream.Write($buffer, 0, $buffer.Length)
-            }
-            elseif ($request.Url.AbsolutePath -eq "/logs/clear" -and $request.HttpMethod -eq "POST") {
-                # Clear events
-                @{ date = (Get-Date -Format "yyyy-MM-dd"); events = @(); machine = $env:COMPUTERNAME } | 
-                ConvertTo-Json | Out-File $EventsFile -Encoding UTF8 -Force
-                $buffer = [System.Text.Encoding]::UTF8.GetBytes('{"status":"cleared"}')
-                $response.ContentType = "application/json"
-                $response.ContentLength64 = $buffer.Length
-                $response.OutputStream.Write($buffer, 0, $buffer.Length)
-            }
-            else {
-                $response.StatusCode = 404
-                $buffer = [System.Text.Encoding]::UTF8.GetBytes('{"error":"Not Found"}')
-                $response.ContentType = "application/json"
-                $response.ContentLength64 = $buffer.Length
-                $response.OutputStream.Write($buffer, 0, $buffer.Length)
-            }
-            
-            $response.Close()
-        }
-        catch {
-            # Ignore errors and continue
+            # Restart via scheduled task
+            Start-Sleep -Seconds 2
+            Start-ScheduledTask -TaskName "FileActivityMonitor" -ErrorAction SilentlyContinue
+            exit
         }
     }
-} -ArgumentList $LogDir
-
-Write-Log "HTTP Server job started (Job ID: $($HttpJob.Id))" "SUCCESS"
-
-# Override Send-Webhook to also store events
-# Event storage initialized
-
-# Keep the script running
-while ($true) { Start-Sleep -Seconds 1 }
+}
