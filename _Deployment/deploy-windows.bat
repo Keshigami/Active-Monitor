@@ -28,19 +28,28 @@ echo   - Killing monitor processes...
 taskkill /F /IM powershell.exe /FI "WINDOWTITLE eq *" 2>nul
 powershell -Command "Get-Process powershell -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -eq '' -and $_.Id -ne $PID } | Stop-Process -Force -ErrorAction SilentlyContinue" 2>nul
 
-:: Remove scheduled task
-echo   - Removing scheduled task...
+:: Remove scheduled tasks
+echo   - Removing scheduled tasks...
 schtasks /Delete /TN "FileActivityMonitor" /F >nul 2>&1
+schtasks /Delete /TN "FileMonitorHttpServer" /F >nul 2>&1
+schtasks /Delete /TN "ParsecMonitorEditor" /F >nul 2>&1
 
-:: Delete entire folder
-echo   - Deleting old files...
-rmdir /S /Q "C:\ProgramData\FileMonitor" 2>nul
+:: Delete scripts but PRESERVE logs (events.json)
+echo   - Deleting old scripts (preserving logs)...
+if exist "C:\ProgramData\FileMonitor\file-monitor.ps1" del /F "C:\ProgramData\FileMonitor\file-monitor.ps1" 2>nul
+if exist "C:\ProgramData\FileMonitor\http-log-server.ps1" del /F "C:\ProgramData\FileMonitor\http-log-server.ps1" 2>nul
+if exist "C:\ProgramData\FileMonitor\monitor.log" del /F "C:\ProgramData\FileMonitor\monitor.log" 2>nul
+if exist "C:\ProgramData\FileMonitor\http-server.log" del /F "C:\ProgramData\FileMonitor\http-server.log" 2>nul
+:: Note: events.json is PRESERVED for daily report continuity
+
+:: Clean Parsec monitor but preserve its logs too
+if exist "C:\ProgramData\ParsecMonitor\parsec-monitor-admin.ps1" del /F "C:\ProgramData\ParsecMonitor\parsec-monitor-admin.ps1" 2>nul
 
 :: Wait for mutex to release
 echo   - Waiting 3 seconds for cleanup...
 timeout /t 3 /nobreak >nul
 
-echo [OK] Cleanup complete
+echo [OK] Cleanup complete (logs preserved)
 
 :: ============================================================
 :: PHASE 2: FRESH INSTALL
@@ -52,14 +61,26 @@ echo [PHASE 2] Installing fresh copy...
 mkdir "C:\ProgramData\FileMonitor" 2>nul
 
 :: Download from Admin PC
-echo   - Downloading script from Admin PC (192.168.1.171:8888)...
-powershell -Command "try { Invoke-WebRequest -Uri 'http://192.168.1.171:8888/file-monitor.ps1' -OutFile 'C:\ProgramData\FileMonitor\file-monitor.ps1' -UseBasicParsing -TimeoutSec 10; Write-Host '   [OK] Download successful' } catch { Write-Host '   [FAIL]' $_.Exception.Message; exit 1 }"
+echo   - Downloading scripts from Admin PC (192.168.1.171:8888)...
+powershell -Command "try { Invoke-WebRequest -Uri 'http://192.168.1.171:8888/file-monitor.ps1' -OutFile 'C:\ProgramData\FileMonitor\file-monitor.ps1' -UseBasicParsing -TimeoutSec 10; Write-Host '   [OK] file-monitor.ps1 downloaded' } catch { Write-Host '   [FAIL]' $_.Exception.Message; exit 1 }"
 if %errorlevel% neq 0 (
     echo [ERROR] Download failed! Is the update server running on Admin PC?
     echo         Run start-update-server.bat on the Admin PC first.
     pause
     exit /b 1
 )
+
+:: Download HTTP Log Server
+powershell -Command "try { Invoke-WebRequest -Uri 'http://192.168.1.171:8888/http-log-server.ps1' -OutFile 'C:\ProgramData\FileMonitor\http-log-server.ps1' -UseBasicParsing -TimeoutSec 10; Write-Host '   [OK] http-log-server.ps1 downloaded' } catch { Write-Host '   [FAIL]' $_.Exception.Message; exit 1 }"
+if %errorlevel% neq 0 (
+    echo [ERROR] HTTP log server download failed!
+    pause
+    exit /b 1
+)
+
+:: Download Parsec Monitor (for Parsec connect/disconnect tracking)
+if not exist "C:\ProgramData\ParsecMonitor" mkdir "C:\ProgramData\ParsecMonitor" 2>nul
+powershell -Command "try { Invoke-WebRequest -Uri 'http://192.168.1.171:8888/parsec-monitor-admin.ps1' -OutFile 'C:\ProgramData\ParsecMonitor\parsec-monitor-admin.ps1' -UseBasicParsing -TimeoutSec 10; Write-Host '   [OK] parsec-monitor-admin.ps1 downloaded' } catch { Write-Host '   [WARN] Parsec monitor download failed (optional)' }"
 
 :: Verify file exists and has content
 for %%A in ("C:\ProgramData\FileMonitor\file-monitor.ps1") do (
@@ -83,28 +104,60 @@ powershell -Command "New-NetFirewallRule -DisplayName 'FileMonitor HTTP' -Direct
 echo [OK] Firewall configured
 
 :: ============================================================
-:: PHASE 4: CREATE SCHEDULED TASK
+:: PHASE 4: CREATE SCHEDULED TASKS
 :: ============================================================
 echo.
-echo [PHASE 4] Creating scheduled task...
+echo [PHASE 4] Creating scheduled tasks...
 
+:: File Activity Monitor Task
 powershell -Command "$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-WindowStyle Hidden -ExecutionPolicy Bypass -File \"C:\ProgramData\FileMonitor\file-monitor.ps1\"'; $trigger = New-ScheduledTaskTrigger -AtLogon; $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -RestartInterval (New-TimeSpan -Minutes 1) -RestartCount 999; Register-ScheduledTask -TaskName 'FileActivityMonitor' -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest -Force" >nul 2>&1
-echo [OK] Scheduled task created
+echo   [OK] FileActivityMonitor task created
+
+:: HTTP Log Server Task
+schtasks /Delete /TN "FileMonitorHttpServer" /F >nul 2>&1
+powershell -Command "$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-WindowStyle Hidden -ExecutionPolicy Bypass -File \"C:\ProgramData\FileMonitor\http-log-server.ps1\"'; $trigger = New-ScheduledTaskTrigger -AtLogon; $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -RestartInterval (New-TimeSpan -Minutes 1) -RestartCount 999; Register-ScheduledTask -TaskName 'FileMonitorHttpServer' -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest -Force" >nul 2>&1
+echo   [OK] FileMonitorHttpServer task created
+
+:: Parsec Monitor Task (for connect/disconnect tracking)
+if exist "C:\ProgramData\ParsecMonitor\parsec-monitor-admin.ps1" (
+    schtasks /Delete /TN "ParsecMonitorEditor" /F >nul 2>&1
+    powershell -Command "$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-WindowStyle Hidden -ExecutionPolicy Bypass -File \"C:\ProgramData\ParsecMonitor\parsec-monitor-admin.ps1\"'; $trigger = New-ScheduledTaskTrigger -AtLogon; $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -RestartInterval (New-TimeSpan -Minutes 1) -RestartCount 999; Register-ScheduledTask -TaskName 'ParsecMonitorEditor' -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest -Force" >nul 2>&1
+    echo   [OK] ParsecMonitorEditor task created
+) else (
+    echo   [SKIP] ParsecMonitorEditor - script not found
+)
 
 :: ============================================================
-:: PHASE 5: START SERVICE
+:: PHASE 5: START SERVICES
 :: ============================================================
 echo.
-echo [PHASE 5] Starting background service...
+echo [PHASE 5] Starting background services...
 
 schtasks /Run /TN "FileActivityMonitor" >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [WARN] Failed to start scheduled task instantly. It will start on next reboot.
+    echo   [WARN] FileActivityMonitor failed to start instantly.
 ) else (
-    echo [OK] Service started in background.
+    echo   [OK] FileActivityMonitor started.
 )
 
-:: Wait for it to initialize and create log
+schtasks /Run /TN "FileMonitorHttpServer" >nul 2>&1
+if %errorlevel% neq 0 (
+    echo   [WARN] FileMonitorHttpServer failed to start instantly.
+) else (
+    echo   [OK] FileMonitorHttpServer started.
+)
+
+:: Start Parsec Monitor if available
+if exist "C:\ProgramData\ParsecMonitor\parsec-monitor-admin.ps1" (
+    schtasks /Run /TN "ParsecMonitorEditor" >nul 2>&1
+    if %errorlevel% neq 0 (
+        echo   [WARN] ParsecMonitorEditor failed to start instantly.
+    ) else (
+        echo   [OK] ParsecMonitorEditor started.
+    )
+)
+
+:: Wait for initialization
 echo   - Waiting for initialization...
 timeout /t 5 /nobreak >nul
 

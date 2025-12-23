@@ -275,7 +275,6 @@ foreach ($dir in $WatchDirs) {
             $w = New-Object System.IO.FileSystemWatcher
             $w.Path = $dir
             $w.IncludeSubdirectories = $true
-            $w.InternalBufferSize = 65536 # Increase to 64KB (Max) to prevent overflow
             $w.EnableRaisingEvents = $true
             $w.NotifyFilter = [System.IO.NotifyFilters]::FileName -bor 
             [System.IO.NotifyFilters]::LastWrite -bor 
@@ -306,8 +305,10 @@ $systemExcludes = @(
 $ignorePatterns = @('.git', 'node_modules', '.tmp', '~$', 'AppData', '.cache', 
     'Local\Microsoft', 'Local\Google', 'Local\Temp', 'ntuser', '.log', 'Parsec',
     'FileMonitor', 'Prefetch', 'SoftwareDistribution', 'n8ndata', 'database.sqlite',
-    '-wal', '-shm', '-journal', 
+    '.claude', '.gemini', '.pb', '-wal', '-shm', '-journal', 'antigravity', 'AI_Generation', 'ai', '.docker',
     '.wdc', '.log', '.tmp', '.idlk', '.plist', 'Render Files', 'Analysis Files', 'Transcoded Media', 'Proxies')
+
+# Rate limiting
 $script:eventTimes = @()
 $script:lastSent = @{}
 $script:lastApp = ""
