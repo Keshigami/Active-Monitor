@@ -23,10 +23,11 @@ import os
 import sys
 import json
 import time
+import shutil
 import subprocess
 import urllib.request
 import threading
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from collections import deque
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -163,7 +164,7 @@ def clipboard_monitor():
                     for file_path in files:
                         if os.path.isfile(file_path):
                             event = {
-                                "timestamp": datetime.now().isoformat(),
+                                "timestamp": datetime.now().astimezone().isoformat(),
                                 "event": "clipboard_file",
                                 "path": file_path,
                                 "filename": os.path.basename(file_path),
@@ -198,12 +199,17 @@ IGNORE_PATTERNS = [
 
 # Rate limiting - balanced for visibility without freezing
 MAX_EVENTS_PER_MINUTE = 5
+MAX_EVENTS_STORED = 1000  # Maximum events to keep in memory
 event_times = deque(maxlen=MAX_EVENTS_PER_MINUTE)
 last_sent = {}
 MIN_EVENT_GAP = 10  # seconds between events for same file
 
 # In-memory events
-todays_events = []
+todays_events = deque(maxlen=MAX_EVENTS_STORED)
+
+# Track connected Parsec users (clean usernames without #ID)
+connected_users = set()
+last_archive_check = time.time()
 
 # Track active app
 last_app = None
@@ -260,8 +266,57 @@ def load_events():
         todays_events = deque(maxlen=MAX_EVENTS_STORED)
 
 def save_events():
+    global last_archive_check
+    # Periodic archive check (every hour)
+    now = time.time()
+    if now - last_archive_check > 3600:  # 1 hour
+        last_archive_check = now
+        check_and_archive()
+    
     with open(EVENTS_LOG, 'w') as f:
         json.dump({'date': str(date.today()), 'events': list(todays_events)}, f)
+
+def check_and_archive():
+    """Check if date changed and archive if needed"""
+    global todays_events
+    today_date = date.today().isoformat()
+    
+    if os.path.exists(EVENTS_LOG):
+        try:
+            with open(EVENTS_LOG, 'r') as f:
+                data = json.load(f)
+            file_date = data.get('date')
+            
+            if file_date and file_date != today_date:
+                # Date changed: Archive and reset
+                archive_dir = os.path.join(os.path.dirname(EVENTS_LOG), 'Archive')
+                if not os.path.exists(archive_dir):
+                    os.makedirs(archive_dir)
+                
+                archive_name = f'events-{file_date}.json'
+                archive_path = os.path.join(archive_dir, archive_name)
+                shutil.copy2(EVENTS_LOG, archive_path)
+                print(f"[ARCHIVE] Archived log to {archive_name}")
+                
+                # Cleanup old archives (30 days)
+                cutoff = datetime.now() - timedelta(days=30)
+                for fn in os.listdir(archive_dir):
+                    fp = os.path.join(archive_dir, fn)
+                    if os.path.isfile(fp) and os.stat(fp).st_mtime < cutoff.timestamp():
+                        os.remove(fp)
+                
+                # Reset events for new day
+                todays_events = deque(maxlen=MAX_EVENTS_STORED)
+                print(f"[ARCHIVE] Started new log for {today_date}")
+        except Exception as e:
+            print(f"Archive check failed: {e}")
+
+def get_connected_users():
+    """Return comma-separated list of connected users, or 'local' if none"""
+    if connected_users:
+        return ', '.join(sorted(connected_users))
+    return 'local'
+
 
 class FileMonitor(FileSystemEventHandler):
     def should_ignore(self, path):
@@ -302,11 +357,12 @@ class FileMonitor(FileSystemEventHandler):
             last_app_time = now
         
         event = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now().astimezone().isoformat(),
             "event": classified_event,
             "path": path,
             "filename": os.path.basename(path),
-            "app": last_app
+            "app": last_app,
+            "connected_user": get_connected_users()
         }
         
         todays_events.append(event)
@@ -381,11 +437,20 @@ class ParsecLogHandler(FileSystemEventHandler):
                             
                             self.parsec_rate_limits[parsec_key] = now
 
+                            # Extract clean username (remove #ID)
+                            clean_user = user_part.split('#')[0]
+                            
+                            # Update connected users tracking
+                            if status == "connected":
+                                connected_users.add(clean_user)
+                            else:
+                                connected_users.discard(clean_user)
+
                             payload = {
-                                "timestamp": datetime.now().isoformat(),
+                                "timestamp": datetime.now().astimezone().isoformat(),
                                 "event": "parsec_connection",
                                 "status": status,
-                                "user": user_part,
+                                "user": clean_user,
                                 "machine": os.uname().nodename
                             }
                             
@@ -409,7 +474,7 @@ app = Flask(__name__)
 
 @app.route('/logs')
 def get_logs():
-    return jsonify({'date': str(date.today()), 'events': todays_events, 'machine': os.uname().nodename})
+    return jsonify({'date': str(date.today()), 'events': list(todays_events), 'machine': os.uname().nodename})
 
 @app.route('/logs/clear', methods=['POST'])
 def clear_logs():
@@ -450,19 +515,28 @@ if __name__ == "__main__":
         else:
             print(f" -> Skipped (not found): {directory}")
             
-    # Add Parsec Log Watcher
-    parsec_log = os.path.expanduser('~/.parsec/log.txt')
-    if os.path.exists(parsec_log):
-        print(f" -> Watching Parsec Log: {parsec_log}")
-        observer.schedule(ParsecLogHandler(parsec_log, WEBHOOK_URL), os.path.dirname(parsec_log), recursive=False)
+    # Add Parsec Log Watcher - Check multiple possible locations
+    parsec_log_paths = [
+        os.path.expanduser('~/.parsec/log.txt'),
+        '/Users/Shared/.parsec/log.txt',  # Shared installer
+        os.path.expanduser('~/Library/Application Support/Parsec/log.txt'),
+        os.path.expanduser('~/Library/Logs/Parsec/log.txt'),
+        os.path.expanduser('~/Library/Preferences/Parsec/log.txt'),
+        os.path.expanduser('~/Library/Containers/tv.parsec.www/Data/Library/Logs/log.txt'),
+        '/tmp/parsec.log',
+    ]
+    
+    parsec_log_found = None
+    for log_path in parsec_log_paths:
+        if os.path.exists(log_path):
+            parsec_log_found = log_path
+            break
+    
+    if parsec_log_found:
+        print(f" -> Watching Parsec Log: {parsec_log_found}")
+        observer.schedule(ParsecLogHandler(parsec_log_found, WEBHOOK_URL), os.path.dirname(parsec_log_found), recursive=False)
     else:
-        # Also check /Library/Application Support/Parsec/log.txt
-        mac_parsec_log = os.path.expanduser('~/Library/Application Support/Parsec/log.txt')
-        if os.path.exists(mac_parsec_log):
-             print(f" -> Watching Mac Parsec Log: {mac_parsec_log}")
-             observer.schedule(ParsecLogHandler(mac_parsec_log, WEBHOOK_URL), os.path.dirname(mac_parsec_log), recursive=False)
-        else:
-             print(f" -> Parsec log not found. Checked ~/.parsec/log.txt and ~/Library/Application Support/Parsec/log.txt")
+        print(f" -> Parsec log not found. Checked: {parsec_log_paths}")
 
     observer.start()
     
@@ -518,3 +592,114 @@ echo "   Watching: $WATCH_DIRS (and /Volumes)"
 echo "   Webhook: $WEBHOOK_URL"
 echo "   App Tracking: Enabled"
 echo "   Log API: http://$(hostname):8080/logs"
+
+# --- SELF-TEST VERIFICATION ---
+echo ""
+echo "🔄 Running self-test..."
+echo ""
+
+# Wait for monitor to start, then restart to ensure watchdog initializes
+sleep 3
+echo "   Restarting monitor to ensure watchdog initializes..."
+pkill -f "file-monitor.py" 2>/dev/null
+sleep 2
+launchctl load "$PLIST_PATH" 2>/dev/null
+sleep 3
+
+TEST_FILE="$HOME/Desktop/monitor_selftest_$(date +%s)"
+PASSED=0
+FAILED=0
+
+# --- TEST 1: FILE CREATED ---
+echo "  [TEST 1] File Created..."
+touch "$TEST_FILE"
+sleep 12
+LOGS=$(curl -s "http://localhost:8080/logs" 2>/dev/null)
+if echo "$LOGS" | grep -q "monitor_selftest" && echo "$LOGS" | grep -q '"event".*"created"'; then
+    echo "    ✅ Created event captured"
+    PASSED=$((PASSED + 1))
+else
+    echo "    ⚠️  Created event not found (may be rate-limited)"
+    FAILED=$((FAILED + 1))
+fi
+
+# --- TEST 2: FILE MODIFIED ---
+echo "  [TEST 2] File Modified..."
+echo "modified content" >> "$TEST_FILE"
+sleep 12
+LOGS=$(curl -s "http://localhost:8080/logs" 2>/dev/null)
+if echo "$LOGS" | grep -q "monitor_selftest" && echo "$LOGS" | grep -q '"event".*"modified"'; then
+    echo "    ✅ Modified event captured"
+    PASSED=$((PASSED + 1))
+else
+    echo "    ⚠️  Modified event not found (may be rate-limited)"
+    FAILED=$((FAILED + 1))
+fi
+
+# --- TEST 3: FILE DELETED ---
+echo "  [TEST 3] File Deleted..."
+rm -f "$TEST_FILE"
+sleep 12
+LOGS=$(curl -s "http://localhost:8080/logs" 2>/dev/null)
+if echo "$LOGS" | grep -q "monitor_selftest" && echo "$LOGS" | grep -q '"event".*"deleted"'; then
+    echo "    ✅ Deleted event captured"
+    PASSED=$((PASSED + 1))
+else
+    echo "    ⚠️  Deleted event not found (may be rate-limited)"
+    FAILED=$((FAILED + 1))
+fi
+
+# Summary
+echo ""
+if [ $PASSED -eq 3 ]; then
+    echo "✅ All file event tests PASSED ($PASSED/3)"
+elif [ $PASSED -gt 0 ]; then
+    echo "⚠️  Partial success: $PASSED/3 tests passed"
+    if ! pgrep -f "file-monitor.py" > /dev/null; then
+        echo "   ❌ Monitor process not running! Check: tail -20 /tmp/file-monitor.log"
+    fi
+else
+    echo "❌ All file event tests FAILED"
+    if ! pgrep -f "file-monitor.py" > /dev/null; then
+        echo "   Monitor process not running! Check: tail -20 /tmp/file-monitor.log"
+    fi
+fi
+
+# Check Parsec log detection
+if tail -50 /tmp/file-monitor.log 2>/dev/null | grep -q "Watching Parsec Log"; then
+    PARSEC_LOG=$(tail -50 /tmp/file-monitor.log | grep "Watching Parsec Log" | tail -1)
+    echo "✅ Parsec: $PARSEC_LOG"
+    
+    # Interactive Parsec test
+    echo ""
+    echo "╔════════════════════════════════════════════════════════════════╗"
+    echo "║  PARSEC CONNECTION TEST                                        ║"
+    echo "╠════════════════════════════════════════════════════════════════╣"
+    echo "║  Please test Parsec now:                                       ║"
+    echo "║    1. Connect to this Mac via Parsec from another device       ║"
+    echo "║    2. Disconnect from Parsec                                   ║"
+    echo "║  Watch for [PARSEC] messages in the terminal                   ║"
+    echo "╚════════════════════════════════════════════════════════════════╝"
+    echo ""
+    read -p "Press Enter after testing Parsec (or type 'skip' to skip): " PARSEC_RESPONSE
+    
+    if [ "$PARSEC_RESPONSE" != "skip" ]; then
+        # Check if any Parsec events were logged recently
+        if tail -20 /tmp/file-monitor.log 2>/dev/null | grep -q "\[PARSEC\]"; then
+            echo "✅ Parsec events detected in log!"
+        else
+            echo "⚠️  No Parsec events found in recent log. Did you see [PARSEC] messages above?"
+        fi
+    else
+        echo "   Parsec test skipped."
+    fi
+    
+elif tail -50 /tmp/file-monitor.log 2>/dev/null | grep -q "Parsec log not found"; then
+    echo "⚠️  Parsec: Log file not found (Parsec may not be installed or running)"
+else
+    echo "⚠️  Parsec: Status unknown (check /tmp/file-monitor.log)"
+fi
+
+echo ""
+echo "✅ Deployment complete! Monitor is running."
+# --- END SELF-TEST ---

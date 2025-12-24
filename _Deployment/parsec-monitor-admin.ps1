@@ -44,6 +44,27 @@ Write-Log "Found Parsec Log: $ParsecLogPath" "SUCCESS"
 $global:ParsecLogLastPos = (Get-Item $ParsecLogPath).Length
 $global:lastParsecKey = ""
 $global:lastParsecEvent = $null
+$global:ConnectedUsers = @{}  # username -> timestamp
+$ConnectedUsersFile = "$env:ProgramData\FileMonitor\connected_users.txt"
+
+function Update-ConnectedUsersFile {
+    try {
+        $entries = @()
+        foreach ($user in $global:ConnectedUsers.Keys) {
+            $ts = $global:ConnectedUsers[$user]
+            $entries += "$user|$($ts.ToString('o'))"
+        }
+        if ($entries.Count -gt 0) {
+            $entries -join ',' | Out-File -FilePath $ConnectedUsersFile -Encoding UTF8 -Force
+        }
+        else {
+            if (Test-Path $ConnectedUsersFile) { Remove-Item $ConnectedUsersFile -Force }
+        }
+    }
+    catch {
+        Write-Log "Failed to update connected users file: $_" "WARN"
+    }
+}
 
 $watcher = New-Object System.IO.FileSystemWatcher
 $watcher.Path = [System.IO.Path]::GetDirectoryName($ParsecLogPath)
@@ -91,11 +112,23 @@ $action = {
                     
                     $global:ParsecRateLimits[$parsecKey] = $now
 
+                    # Clean username (remove #ID)
+                    $cleanUser = $pUser -replace '#\d+$', ''
+                    
+                    # Update connected users tracking
+                    if ($pStatus -eq "connected") {
+                        $global:ConnectedUsers[$cleanUser] = $now
+                    }
+                    else {
+                        $global:ConnectedUsers.Remove($cleanUser)
+                    }
+                    Update-ConnectedUsersFile
+
                     $eventData = @{
                         timestamp = $now.ToString("o")
                         event     = "parsec_connection"
                         status    = $pStatus
-                        user      = $pUser
+                        user      = $cleanUser
                         machine   = $env:COMPUTERNAME
                     }
                     
@@ -123,7 +156,8 @@ $action = {
                             
                             $existingData.events += $eventData
                             $existingData | ConvertTo-Json -Depth 10 | Out-File $EventsFile -Encoding UTF8 -Force
-                        } catch { }
+                        }
+                        catch { }
                     }
                     catch {
                         Write-Log "[PARSEC] Send failed: $($_.Exception.Message)" "ERROR"

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     File Activity Monitor for Windows with App Tracking and Logging
 .DESCRIPTION
@@ -27,10 +27,11 @@ $LogFile = Join-Path $LogDir "monitor.log"
 $mutexName = "Global\FileActivityMonitor"
 $mutexCreated = $false
 try {
-    $mutex = New-Object System.Threading.Mutex($true, $mutexName, [ref]$mutexCreated)
+    $script:mutex = New-Object System.Threading.Mutex($true, $mutexName, [ref]$mutexCreated)
+    [void]$script:mutex # Silence unused variable warning
 }
 catch {
-    $mutex = $null
+    $null # Mutex creation failed, ignore
 }
 
 if (-not $mutexCreated) {
@@ -103,9 +104,7 @@ try {
         else {
             Write-Log "Monitor is up to date." "INFO"
         }
-    }
-}
-catch {
+    } } catch {
     Write-Log "Update check failed: $($_.Exception.Message)" "WARN"
 }
 #>
@@ -125,7 +124,7 @@ public class Win32 {
     public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
 }
 "@
-    Write-Log "Win32 API loaded successfully" "SUCCESS"
+    Write-Log "Win32 API loaded successfully" "SUCCESS" 
 }
 catch {
     Write-Log "Win32 API already loaded or failed: $_" "WARN"
@@ -137,11 +136,42 @@ function Get-ActiveApp {
         $processId = 0
         [Win32]::GetWindowThreadProcessId($hwnd, [ref]$processId) | Out-Null
         $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
-        return $process.ProcessName
+        return $process.ProcessName 
     }
     catch {
         return "Unknown"
     }
+}
+
+function Get-ConnectedUsers {
+    # Read connected users from shared file (written by Parsec monitor)
+    $ConnectedUsersFile = Join-Path $LogDir "connected_users.txt"
+    try {
+        if (Test-Path $ConnectedUsersFile) {
+            $content = Get-Content $ConnectedUsersFile -Raw -ErrorAction SilentlyContinue
+            if ($content) {
+                # Format: user1|timestamp1,user2|timestamp2
+                $users = @()
+                foreach ($entry in $content.Split(',')) {
+                    if ($entry -match '^([^|]+)\|(.+)$') {
+                        $user = $matches[1].Trim()
+                        $timestamp = [DateTime]::Parse($matches[2].Trim())
+                        # Check if entry is less than 8 hours old
+                        if ((Get-Date) - $timestamp -lt [TimeSpan]::FromHours(8)) {
+                            $users += $user
+                        }
+                    }
+                }
+                if ($users.Count -gt 0) {
+                    return ($users | Sort-Object -Unique) -join ', '
+                }
+            }
+        }
+    }
+    catch {
+        # Ignore errors reading file
+    }
+    return "local"
 }
 
 # --- SPECIAL PATHS FOR EVENT CLASSIFICATION ---
@@ -162,7 +192,7 @@ try {
     $oneDrivePath = (Get-ItemProperty -Path "HKCU:\Software\Microsoft\OneDrive" -Name "UserFolder" -ErrorAction SilentlyContinue).UserFolder
     if ($oneDrivePath -and (Test-Path $oneDrivePath)) {
         $CloudSyncPaths += $oneDrivePath
-    }
+    } 
 }
 catch { }
 
@@ -170,16 +200,8 @@ Write-Log "Downloads folder: $DownloadsPath" "INFO"
 Write-Log "Cloud sync paths: $($CloudSyncPaths -join ', ')" "INFO"
 
 # Browser temp/cache paths (used to detect file upload staging)
-$BrowserPaths = @(
-    # Chrome
-    (Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data\Default\File System"),
-    (Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data\Default\blob_storage"),
-    # Firefox
-    (Join-Path $env:APPDATA "Mozilla\Firefox\Profiles"),
-    # Edge
-    (Join-Path $env:LOCALAPPDATA "Microsoft\Edge\User Data\Default\File System"),
-    (Join-Path $env:LOCALAPPDATA "Microsoft\Edge\User Data\Default\blob_storage")
-)
+# Browser temp/cache paths (used to detect file upload staging)
+# (variable removed as unused)
 
 # Browser process names for detection
 $BrowserProcesses = @('chrome', 'firefox', 'msedge', 'iexplore', 'brave', 'opera', 'vivaldi')
@@ -188,7 +210,7 @@ $BrowserProcesses = @('chrome', 'firefox', 'msedge', 'iexplore', 'brave', 'opera
 function Get-RemovableDrives {
     try {
         $removable = Get-WmiObject Win32_LogicalDisk | Where-Object { $_.DriveType -eq 2 }  # DriveType 2 = Removable
-        return $removable | ForEach-Object { $_.DeviceID + "\" }
+        return $removable | ForEach-Object { $_.DeviceID + "\" } 
     }
     catch {
         return @()
@@ -285,7 +307,7 @@ foreach ($dir in $WatchDirs) {
             $w.InternalBufferSize = 65536  # 64KB buffer
             
             $watchers += $w
-            Write-Log " -> Watching: $dir" "SUCCESS"
+            Write-Log " -> Watching: $dir" "SUCCESS" 
         }
         catch {
             Write-Log " -> Failed to watch $dir : $_" "ERROR"
@@ -327,7 +349,7 @@ function Save-TodaysEvents {
             machine = $env:COMPUTERNAME
         }
         $json = $data | ConvertTo-Json -Depth 10
-        $json | Out-File $EventsFile -Encoding UTF8 -Force
+        $json | Out-File $EventsFile -Encoding UTF8 -Force 
     }
     catch {
         Write-Log "Failed to save events: $($_.Exception.Message)" "ERROR"
@@ -365,7 +387,7 @@ function Initialize-TodaysEvents {
                     
                 # Reset for today
                 $script:todaysEvents = @()
-            }
+            } 
         }
         catch {
             Write-Log "Failed to load events: $($_.Exception.Message)" "ERROR"
@@ -416,12 +438,13 @@ function Send-Webhook {
     $script:eventTimes += $now
     
     $payload = @{
-        timestamp = $now.ToString("o")
-        event     = $EventType
-        path      = $Path
-        filename  = [System.IO.Path]::GetFileName($Path)
-        machine   = $env:COMPUTERNAME
-        app       = $script:lastApp
+        timestamp      = $now.ToString("o")
+        event          = $EventType
+        path           = $Path
+        filename       = [System.IO.Path]::GetFileName($Path)
+        machine        = $env:COMPUTERNAME
+        app            = $script:lastApp
+        connected_user = Get-ConnectedUsers
     }
     
     # Store event for daily summary
@@ -435,7 +458,7 @@ function Send-Webhook {
         Write-Log "[$EventType] [$($script:lastApp)] $([System.IO.Path]::GetFileName($Path))" "INFO"
         
         # Update watchdog - we processed an event successfully
-        $script:lastEventTime = Get-Date
+        $script:lastEventTime = Get-Date 
     }
     catch {
         Write-Log "Webhook failed for $Path : $($_.Exception.Message)" "ERROR"
@@ -492,7 +515,7 @@ $action = {
                         $eventType = "external_copy"
                         break
                     }
-                }
+                } 
             }
             catch { }
         }
@@ -508,7 +531,7 @@ $action = {
             $procId = 0
             [Win32]::GetWindowThreadProcessId($hwnd, [ref]$procId) | Out-Null
             $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
-            $checkApp = $proc.ProcessName
+            $checkApp = $proc.ProcessName 
         }
         catch { }
         
@@ -529,17 +552,43 @@ $action = {
         $processId = 0
         [Win32]::GetWindowThreadProcessId($hwnd, [ref]$processId) | Out-Null
         $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
-        $app = $process.ProcessName
+        $app = $process.ProcessName 
     }
     catch { }
     
+    # Get connected user from shared file
+    $connectedUser = "local"
+    $connectedUsersFile = Join-Path $config.LogDir "connected_users.txt"
+    try {
+        if (Test-Path $connectedUsersFile) {
+            $cuContent = Get-Content $connectedUsersFile -Raw -ErrorAction SilentlyContinue
+            if ($cuContent) {
+                $cuUsers = @()
+                foreach ($cuEntry in $cuContent.Split(',')) {
+                    if ($cuEntry -match '^([^|]+)\|(.+)$') {
+                        $cuUser = $matches[1].Trim()
+                        $cuTimestamp = [DateTime]::Parse($matches[2].Trim())
+                        if ((Get-Date) - $cuTimestamp -lt [TimeSpan]::FromHours(8)) {
+                            $cuUsers += $cuUser
+                        }
+                    }
+                }
+                if ($cuUsers.Count -gt 0) {
+                    $connectedUser = ($cuUsers | Sort-Object -Unique) -join ', '
+                }
+            }
+        }
+    }
+    catch { }
+
     $eventData = @{
-        timestamp = (Get-Date).ToString("o")
-        event     = $eventType
-        path      = $path
-        filename  = [System.IO.Path]::GetFileName($path)
-        machine   = $env:COMPUTERNAME
-        app       = $app
+        timestamp      = (Get-Date).ToString("o")
+        event          = $eventType
+        path           = $path
+        filename       = [System.IO.Path]::GetFileName($path)
+        machine        = $env:COMPUTERNAME
+        app            = $app
+        connected_user = $connectedUser
     }
     
     $payload = $eventData | ConvertTo-Json
@@ -566,9 +615,9 @@ $action = {
             }
             
             $existingData.events += $eventData
-            $existingData | ConvertTo-Json -Depth 10 | Out-File $EventsFile -Encoding UTF8 -Force
+            $existingData | ConvertTo-Json -Depth 10 | Out-File $EventsFile -Encoding UTF8 -Force 
         }
-        catch { }
+        catch { } 
     }
     catch {
         $line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [ERROR] Webhook failed: $($_.Exception.Message)"
@@ -580,6 +629,7 @@ $action = {
 $eventConfig = @{
     WebhookUrl       = $WebhookUrl
     LogFile          = $LogFile
+    LogDir           = $LogDir
     EventsFile       = Join-Path $LogDir "events.json"
     systemExcludes   = $systemExcludes
     ignorePatterns   = $ignorePatterns
@@ -635,4 +685,5 @@ while ($true) {
         }
     }
 }
+
 

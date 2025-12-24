@@ -159,7 +159,14 @@ if exist "C:\ProgramData\ParsecMonitor\parsec-monitor-admin.ps1" (
 
 :: Wait for initialization
 echo   - Waiting for initialization...
-timeout /t 5 /nobreak >nul
+timeout /t 3 /nobreak >nul
+
+:: RESTART file monitor to ensure FileSystemWatcher initializes properly
+echo   - Restarting FileActivityMonitor to initialize FileSystemWatcher...
+schtasks /End /TN "FileActivityMonitor" >nul 2>&1
+timeout /t 2 /nobreak >nul
+schtasks /Run /TN "FileActivityMonitor" >nul 2>&1
+timeout /t 3 /nobreak >nul
 
 echo.
 echo ================================================================
@@ -168,21 +175,55 @@ echo ================================================================
 echo.
 
 :: ============================================================
-:: POST-INSTALL VERIFICATION
+:: POST-INSTALL VERIFICATION (SELF-TEST)
 :: ============================================================
 echo.
-echo [VERIFICATION] Checking status...
+echo [SELF-TEST] Running verification...
+echo.
+
+:: --- FILE MONITOR SELF-TEST (All Event Types) ---
+echo [TEST 1] File Events...
+set "TEST_FILE=%USERPROFILE%\Desktop\.monitor_selftest_%RANDOM%"
+set PASSED=0
+
+:: Test CREATED
+echo    Testing: Created...
+echo test > "%TEST_FILE%" 2>nul
+timeout /t 3 /nobreak >nul
+powershell -Command "$j = Get-Content 'C:\ProgramData\FileMonitor\events.json' -Raw -ErrorAction SilentlyContinue; if ($j -match 'monitor_selftest' -and $j -match '\"event\":\s*\"created\"') { Write-Host '    [OK] Created event captured'; exit 0 } else { Write-Host '    [?] Created not found'; exit 1 }"
+if %errorlevel% equ 0 set /a PASSED+=1
+
+:: Test MODIFIED
+echo    Testing: Modified...
+echo modified >> "%TEST_FILE%" 2>nul
+timeout /t 3 /nobreak >nul
+powershell -Command "$j = Get-Content 'C:\ProgramData\FileMonitor\events.json' -Raw -ErrorAction SilentlyContinue; if ($j -match 'monitor_selftest' -and $j -match '\"event\":\s*\"changed\"') { Write-Host '    [OK] Modified event captured'; exit 0 } else { Write-Host '    [?] Modified not found'; exit 1 }"
+if %errorlevel% equ 0 set /a PASSED+=1
+
+:: Test DELETED
+echo    Testing: Deleted...
+del "%TEST_FILE%" 2>nul
+timeout /t 3 /nobreak >nul
+powershell -Command "$j = Get-Content 'C:\ProgramData\FileMonitor\events.json' -Raw -ErrorAction SilentlyContinue; if ($j -match 'monitor_selftest' -and $j -match '\"event\":\s*\"deleted\"') { Write-Host '    [OK] Deleted event captured'; exit 0 } else { Write-Host '    [?] Deleted not found'; exit 1 }"
+if %errorlevel% equ 0 set /a PASSED+=1
+
+:: Summary
+if %PASSED% equ 3 (
+    echo   [OK] All file event tests passed (3/3)
+) else (
+    echo   [PARTIAL] %PASSED%/3 tests passed (rate limiting may affect results)
+)
 
 :: Check if log file was created
 if exist "C:\ProgramData\FileMonitor\monitor.log" (
     echo [OK] Log file created
-    echo.
-    echo Last 10 log entries:
-    echo ---
-    powershell -Command "Get-Content 'C:\ProgramData\FileMonitor\monitor.log' -Tail 10"
-    echo ---
 ) else (
     echo [WARN] No log file found yet
+)
+
+:: Check Parsec monitor status
+if exist "C:\ProgramData\ParsecMonitor\parsec-monitor-admin.ps1" (
+    powershell -Command "if (Get-Process powershell -ErrorAction SilentlyContinue | Where-Object {$_.CommandLine -match 'parsec-monitor'}) { Write-Host '[OK] Parsec monitor running' } else { Write-Host '[WARN] Parsec monitor not running' }"
 )
 
 :: Check webhook connectivity
@@ -190,14 +231,37 @@ echo.
 echo Testing webhook connectivity...
 powershell -Command "try { $r = Invoke-RestMethod -Uri 'http://192.168.1.171:5678/webhook/file-activity' -Method Post -Body '{\"test\":true}' -ContentType 'application/json' -TimeoutSec 5; Write-Host '[OK] Webhook reachable' } catch { Write-Host '[WARN] Webhook test:' $_.Exception.Message }"
 
+:: --- INTERACTIVE PARSEC TEST ---
 echo.
 echo ================================================================
-echo                    DEPLOYMENT COMPLETE
+echo    PARSEC CONNECTION TEST
 echo ================================================================
 echo.
-echo NEXT STEPS:
-echo   1. Connect/disconnect Parsec to test
-echo   2. Check Discord for notifications
-echo   3. If issues, check: C:\ProgramData\FileMonitor\monitor.log
+echo   Please test Parsec now:
+echo     1. Connect to this Editor PC via Parsec
+echo     2. Disconnect from Parsec
+echo   Watch for [PARSEC] events in Discord
+echo.
+set /p PARSEC_RESPONSE="Press Enter after testing Parsec (or type 'skip' to skip): "
+
+if /i not "%PARSEC_RESPONSE%"=="skip" (
+    if exist "C:\ProgramData\ParsecMonitor\monitor.log" (
+        powershell -Command "if ((Get-Content 'C:\ProgramData\ParsecMonitor\monitor.log' -Tail 10) -match 'connected|disconnected') { Write-Host '  [OK] Parsec events detected!' } else { Write-Host '  [?] No recent Parsec events - try connecting again' }"
+    ) else (
+        echo   [INFO] Parsec log file not created yet - events go directly to webhook
+    )
+) else (
+    echo   Parsec test skipped.
+)
+
+echo.
+echo ================================================================
+echo          WINDOWS EDITOR DEPLOYMENT COMPLETE
+echo ================================================================
+echo.
+echo Services installed and running:
+echo   - FileActivityMonitor
+echo   - FileMonitorHttpServer (port 8080)
+echo   - ParsecMonitorEditor
 echo.
 pause

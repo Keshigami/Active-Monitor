@@ -144,6 +144,37 @@ function Get-ActiveApp {
     }
 }
 
+function Get-ConnectedUsers {
+    # Read connected users from shared file (written by Parsec monitor)
+    $ConnectedUsersFile = Join-Path $LogDir "connected_users.txt"
+    try {
+        if (Test-Path $ConnectedUsersFile) {
+            $content = Get-Content $ConnectedUsersFile -Raw -ErrorAction SilentlyContinue
+            if ($content) {
+                # Format: user1|timestamp1,user2|timestamp2
+                $users = @()
+                foreach ($entry in $content.Split(',')) {
+                    if ($entry -match '^([^|]+)\|(.+)$') {
+                        $user = $matches[1].Trim()
+                        $timestamp = [DateTime]::Parse($matches[2].Trim())
+                        # Check if entry is less than 8 hours old
+                        if ((Get-Date) - $timestamp -lt [TimeSpan]::FromHours(8)) {
+                            $users += $user
+                        }
+                    }
+                }
+                if ($users.Count -gt 0) {
+                    return ($users | Sort-Object -Unique) -join ', '
+                }
+            }
+        }
+    }
+    catch {
+        # Ignore errors reading file
+    }
+    return "local"
+}
+
 # --- SPECIAL PATHS FOR EVENT CLASSIFICATION ---
 $DownloadsPath = Join-Path $env:USERPROFILE "Downloads"
 
@@ -417,12 +448,13 @@ function Send-Webhook {
     $script:eventTimes += $now
     
     $payload = @{
-        timestamp = $now.ToString("o")
-        event     = $EventType
-        path      = $Path
-        filename  = [System.IO.Path]::GetFileName($Path)
-        machine   = $env:COMPUTERNAME
-        app       = $script:lastApp
+        timestamp      = $now.ToString("o")
+        event          = $EventType
+        path           = $Path
+        filename       = [System.IO.Path]::GetFileName($Path)
+        machine        = $env:COMPUTERNAME
+        app            = $script:lastApp
+        connected_user = Get-ConnectedUsers
     }
     
     # Store event for daily summary
@@ -534,13 +566,39 @@ $action = {
     }
     catch { }
     
+    # Get connected user from shared file
+    $connectedUser = "local"
+    $connectedUsersFile = Join-Path $config.LogDir "connected_users.txt"
+    try {
+        if (Test-Path $connectedUsersFile) {
+            $cuContent = Get-Content $connectedUsersFile -Raw -ErrorAction SilentlyContinue
+            if ($cuContent) {
+                $cuUsers = @()
+                foreach ($cuEntry in $cuContent.Split(',')) {
+                    if ($cuEntry -match '^([^|]+)\|(.+)$') {
+                        $cuUser = $matches[1].Trim()
+                        $cuTimestamp = [DateTime]::Parse($matches[2].Trim())
+                        if ((Get-Date) - $cuTimestamp -lt [TimeSpan]::FromHours(8)) {
+                            $cuUsers += $cuUser
+                        }
+                    }
+                }
+                if ($cuUsers.Count -gt 0) {
+                    $connectedUser = ($cuUsers | Sort-Object -Unique) -join ', '
+                }
+            }
+        }
+    }
+    catch { }
+
     $eventData = @{
-        timestamp = (Get-Date).ToString("o")
-        event     = $eventType
-        path      = $path
-        filename  = [System.IO.Path]::GetFileName($path)
-        machine   = $env:COMPUTERNAME
-        app       = $app
+        timestamp      = (Get-Date).ToString("o")
+        event          = $eventType
+        path           = $path
+        filename       = [System.IO.Path]::GetFileName($path)
+        machine        = $env:COMPUTERNAME
+        app            = $app
+        connected_user = $connectedUser
     }
     
     $payload = $eventData | ConvertTo-Json
@@ -581,6 +639,7 @@ $action = {
 $eventConfig = @{
     WebhookUrl       = $WebhookUrl
     LogFile          = $LogFile
+    LogDir           = $LogDir
     EventsFile       = Join-Path $LogDir "events.json"
     systemExcludes   = $systemExcludes
     ignorePatterns   = $ignorePatterns
